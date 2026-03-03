@@ -1,0 +1,24 @@
+# secrets & session
+.env
+session.json
+
+# Instagram export & runtime data (contain personal post history)
+liked_posts.json
+resolved_cache.json
+wbloks_progress.json
+user_pk_cache.json
+progress.json
+
+# logs & scratch
+*.log
+preresolved.txt
+a.txt
+b.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
