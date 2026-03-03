@@ -339,8 +339,14 @@ def fetch_tokens(session_id: str) -> tuple:
 
 
 def post_batch(session_id: str, tokens: dict, item_keys: list,
-               ig_session: requests.Session | None = None) -> bool:
-    """POST a single batch to the wbloks unlike endpoint. Returns True on success."""
+               ig_session: requests.Session | None = None) -> bool | None:
+    """POST a single batch to the wbloks unlike endpoint.
+
+    Returns:
+      True  — confirmed success
+      None  — uncertain (timed out; action may or may not have processed)
+      False — confirmed failure
+    """
     params_obj = {
         "content_container_id": _CONTAINER_ID,
         "content_element_id":   _ELEMENT_ID,
@@ -377,13 +383,13 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
             break
         except requests.exceptions.Timeout:
             if _attempt == 2:
-                print("  [warn] Timed out 3 times — assuming action processed, continuing")
-                return True
+                print("  [warn] Timed out 3 times — action uncertain, will retry next run")
+                return None  # uncertain: do NOT save to progress
             _wait = 15 * (_attempt + 1)
             print(f"  [warn] Timeout on attempt {_attempt + 1}/3, retrying in {_wait}s …")
             time.sleep(_wait)
     else:
-        return True  # all retries exhausted (covered above, but satisfies type checker)
+        return None  # all retries exhausted, uncertain
     text = resp.text
     print(f"  HTTP {resp.status_code} | snippet: {text[:300]}")
     raw = text.lstrip("for (;;);")
@@ -438,12 +444,15 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
     batches = [pending[i:i + BATCH_SIZE] for i in range(0, len(pending), BATCH_SIZE)]
     total_batches = len(batches)
 
-    def _dispatch(batch: list[str], bnum: int) -> None:
+    def _dispatch(batch: list[str], bnum: int) -> bool | None:
         ok = post_batch(session_id, tokens, batch, ig_session=ig_session)
-        if ok:
+        if ok is True:
             print(f"  [batch {bnum}/{total_batches}] ✓ {len(batch)} unliked in background")
+        elif ok is None:
+            print(f"  [batch {bnum}/{total_batches}] ? timed out — will retry next run (not saved to progress)")
         else:
             print(f"  [batch {bnum}/{total_batches}] ✗ failed (logged, continuing)")
+        return ok
 
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
         pending_futures: list[tuple[int, list[str], Future]] = []
@@ -457,13 +466,14 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
             still_pending = []
             for bnum, keys, fut in pending_futures:
                 if fut.done():
-                    with done_lock:
-                        for k in keys:
-                            done.add(k)
-                        unliked += len(keys)
-                    save_json_file(PROGRESS_FILE, sorted(done))
-                    print(f"  [progress] total unliked this run: {unliked:,}  |  "
-                          f"remaining: {total - unliked:,}")
+                    if fut.result() is True:  # only save confirmed batches
+                        with done_lock:
+                            for k in keys:
+                                done.add(k)
+                            unliked += len(keys)
+                        save_json_file(PROGRESS_FILE, sorted(done))
+                        print(f"  [progress] total unliked this run: {unliked:,}  |  "
+                              f"remaining: {total - unliked:,}")
                 else:
                     still_pending.append((bnum, keys, fut))
             pending_futures = still_pending
@@ -474,13 +484,14 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
                 still_pending = []
                 for bnum, keys, fut in pending_futures:
                     if fut.done():
-                        with done_lock:
-                            for k in keys:
-                                done.add(k)
-                            unliked += len(keys)
-                        save_json_file(PROGRESS_FILE, sorted(done))
-                        print(f"  [progress] total unliked this run: {unliked:,}  |  "
-                              f"remaining: {total - unliked:,}")
+                        if fut.result() is True:  # only save confirmed batches
+                            with done_lock:
+                                for k in keys:
+                                    done.add(k)
+                                unliked += len(keys)
+                            save_json_file(PROGRESS_FILE, sorted(done))
+                            print(f"  [progress] total unliked this run: {unliked:,}  |  "
+                                  f"remaining: {total - unliked:,}")
                     else:
                         still_pending.append((bnum, keys, fut))
                 pending_futures = still_pending
@@ -497,12 +508,12 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
 
         # Wait for all remaining in-flight batches
         for bnum, keys, fut in pending_futures:
-            fut.result()
-            with done_lock:
-                for k in keys:
-                    done.add(k)
-                unliked += len(keys)
-            save_json_file(PROGRESS_FILE, sorted(done))
+            if fut.result() is True:
+                with done_lock:
+                    for k in keys:
+                        done.add(k)
+                    unliked += len(keys)
+                save_json_file(PROGRESS_FILE, sorted(done))
 
     print(f"\n[done] Unliked {unliked:,} posts this run.")
 
@@ -531,13 +542,16 @@ def live_unlike_loop(session_id: str) -> None:
     total_unliked = 0
     round_num = 0
 
-    def _dispatch(keys: list[str], rnum: int) -> None:
+    def _dispatch(keys: list[str], rnum: int) -> bool | None:
         """Runs in a worker thread — POST the batch, log result."""
         ok = post_batch(session_id, tokens, keys, ig_session=ig_session)
-        if ok:
+        if ok is True:
             print(f"  [round {rnum}] ✓ {len(keys)} unliked in background")
+        elif ok is None:
+            print(f"  [round {rnum}] ? timed out — will retry next run (not saved to progress)")
         else:
             print(f"  [round {rnum}] ✗ batch failed (logged, continuing)")
+        return ok
 
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
         pending_futures: list[tuple[int, list[str], Future]] = []
@@ -547,12 +561,20 @@ def live_unlike_loop(session_id: str) -> None:
             still_pending = []
             for rnum, keys, fut in pending_futures:
                 if fut.done():
-                    with done_lock:
-                        for k in keys:
-                            done.add(k)
-                        total_unliked += len(keys)
-                        save_json_file(PROGRESS_FILE, sorted(done))
-                    print(f"  [progress] total unliked this run: {total_unliked:,}")
+                    result = fut.result()
+                    if result is True:  # confirmed — save to progress
+                        with done_lock:
+                            for k in keys:
+                                done.add(k)
+                            total_unliked += len(keys)
+                            save_json_file(PROGRESS_FILE, sorted(done))
+                        print(f"  [progress] total unliked this run: {total_unliked:,}")
+                    else:  # None (timeout) or False (failed) — un-mark so next fetch retries
+                        with done_lock:
+                            for k in keys:
+                                done.discard(k)
+                        tag = "timed out" if result is None else "failed"
+                        print(f"  [round {rnum}] {tag} — keys un-marked, will retry on next fetch")
                 else:
                     still_pending.append((rnum, keys, fut))
             pending_futures = still_pending
@@ -590,11 +612,11 @@ def live_unlike_loop(session_id: str) -> None:
 
         # Wait for all remaining in-flight batches
         for rnum, keys, fut in pending_futures:
-            fut.result()
-            with done_lock:
-                for k in keys:
-                    done.add(k)
-            save_json_file(PROGRESS_FILE, sorted(done))
+            if fut.result() is True:
+                with done_lock:
+                    for k in keys:
+                        done.add(k)
+                save_json_file(PROGRESS_FILE, sorted(done))
 
     print(f"\n[done] Dispatched batches for {total_unliked:,} posts via live mode.")
 
