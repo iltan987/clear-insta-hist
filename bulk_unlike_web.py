@@ -391,28 +391,59 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
     else:
         return None  # all retries exhausted, uncertain
     text = resp.text
-    print(f"  HTTP {resp.status_code} | snippet: {text[:300]}")
+
+    # ------------------------------------------------------------------ #
+    # Interpret the response in a human-readable way
+    # ------------------------------------------------------------------ #
+    if resp.status_code == 500:
+        # Instagram's backend sometimes 500s after processing the action.
+        # Extract page title + first meaningful body text from the HTML.
+        title_m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.I)
+        body_m  = re.search(r"<body[^>]*>(.*?)</body>", text, re.I | re.S)
+        body_text = ""
+        if body_m:
+            body_text = re.sub(r"<[^>]+>", " ", body_m.group(1))
+            body_text = re.sub(r"\s+", " ", body_text).strip()[:200]
+        title = title_m.group(1).strip() if title_m else "(no title)"
+        print(f"  HTTP 500 | title: {title}")
+        if body_text:
+            print(f"           body:  {body_text}")
+        print("  [warn] HTTP 500 — action likely processed (Instagram backend glitch)")
+        return True
+
     raw = text.lstrip("for (;;);")
     try:
         data = json.loads(raw)
-        if "error" in data:
-            print(f"  [error] {data['error']}: {data.get('errorSummary','')}")
-            return False
-        # Look for confirmation toast
-        payload_str = json.dumps(data.get("payload", {}))
-        if "unliked" in payload_str.lower() or "you unliked" in payload_str.lower():
-            import re as _re
-            m = _re.search(r'You unliked [^"\\]+', payload_str)
-            if m:
-                print(f"  [ok] Confirmed: {m.group(0)}")
-        return True
     except Exception:
-        # 500 can occur when Instagram's backend processed the action but failed
-        # to serialize the response — the same behaviour seen in the web UI.
-        if resp.status_code == 500:
-            print("  [warn] HTTP 500 — action likely processed (Instagram backend glitch)")
-            return True
+        print(f"  HTTP {resp.status_code} | [warn] non-JSON response: {text[:300]}")
         return False
+
+    if "error" in data:
+        print(f"  HTTP {resp.status_code} | [error] code={data['error']} — {data.get('errorSummary', '')}")
+        return False
+
+    if resp.status_code == 200:
+        # The 200 payload is a bloks response. Search the full raw text for signals
+        # since the toast can be nested arbitrarily deep in bloks_payload.data.
+        # 1. Confirmation toast ("You unliked N posts / reels / ...")
+        toast_m = re.search(r"You unliked [^\"\\]+", raw)
+        if toast_m:
+            print(f"  HTTP 200 | [ok] {toast_m.group(0)}")
+            return True
+
+        # 2. Any visible human-readable text fields in the response
+        all_text = re.findall(r'"text"\s*:\s*"([^"]{5,})"', raw)
+        meaningful = [t for t in all_text
+                      if not t.startswith("dtl:") and "\\" not in t][:3]
+        if meaningful:
+            print(f"  HTTP 200 | bloks messages: {' | '.join(meaningful)}")
+        else:
+            ids = re.findall(r'"id"\s*:\s*"([^"]+)"', raw)[:4]
+            print(f"  HTTP 200 | bloks ids: {', '.join(ids) if ids else '(none)'}")
+        return True
+
+    print(f"  HTTP {resp.status_code} | unexpected status")
+    return False
 
 
 def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
@@ -538,7 +569,11 @@ def live_unlike_loop(session_id: str) -> None:
 
     tokens, ig_session = fetch_tokens(session_id)
     done_lock = threading.Lock()
-    done: set[str] = set(load_json_file(PROGRESS_FILE, []))
+    # In live mode Instagram's own API is the source of truth — posts that were
+    # already unliked simply won't appear in liked_medias(). So we start with an
+    # empty set and only use it for intra-run deduplication (prevents re-queueing
+    # the same posts while in-flight batches haven't resolved yet).
+    done: set[str] = set()
     total_unliked = 0
     round_num = 0
 
