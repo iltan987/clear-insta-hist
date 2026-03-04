@@ -40,6 +40,7 @@ from pathlib import Path
 from urllib.parse import unquote
 import requests
 from dotenv import load_dotenv
+
 try:
     from instagrapi import Client as _IgClient
 except ImportError:
@@ -49,17 +50,21 @@ except ImportError:
 # Paths
 # ---------------------------------------------------------------------------
 LIKED_POSTS_FILE = Path("liked_posts.json")
-RESOLVED_CACHE   = Path("resolved_cache.json")   # {url: "media_pk_0" | "SKIP"}
-USER_PK_CACHE    = Path("user_pk_cache.json")     # kept for backwards compatibility, no longer written
-PROGRESS_FILE    = Path("wbloks_progress.json")   # set of completed "media_pk_author_pk" strings
+RESOLVED_CACHE = Path("resolved_cache.json")  # {url: "media_pk_0" | "SKIP"}
+USER_PK_CACHE = Path(
+    "user_pk_cache.json"
+)  # kept for backwards compatibility, no longer written
+PROGRESS_FILE = Path(
+    "wbloks_progress.json"
+)  # set of completed "media_pk_author_pk" strings
 
 # ---------------------------------------------------------------------------
 # Tuning
 # ---------------------------------------------------------------------------
-BATCH_SIZE    = 99          # items per wbloks POST (API max is 99)
-BATCH_DELAY   = (5, 12)     # seconds between batches
-DAILY_LIMIT   = 5000        # effectively unlimited for bulk; set lower if paranoid
-BATCH_WORKERS = 3           # concurrent wbloks POSTs in-flight at once
+BATCH_SIZE = 99  # items per wbloks POST (API max is 99)
+BATCH_DELAY = (5, 12)  # seconds between batches
+DAILY_LIMIT = 5000  # effectively unlimited for bulk; set lower if paranoid
+BATCH_WORKERS = 3  # concurrent wbloks POSTs in-flight at once
 RESOLVE_DELAY = (1.0, 2.5)  # kept for reference; no longer used (resolve is now local)
 
 WBLOKS_BASE_URL = (
@@ -76,6 +81,7 @@ BROWSER_UA = (
 # ---------------------------------------------------------------------------
 # Helpers — export parsing
 # ---------------------------------------------------------------------------
+
 
 def media_pk_from_shortcode(shortcode: str) -> int:
     """Convert an Instagram shortcode (e.g. 'DByrxaItajH') to a numeric media pk.
@@ -114,14 +120,18 @@ def parse_export(filepath: Path) -> list[dict]:
         if url:
             entries.append({"url": url, "username": username})
 
-    print(f"[parse] {len(entries):,} posts  |  "
-          f"{len({e['username'] for e in entries if e['username']})}"
-          f" unique authors")
+    print(
+        f"[parse] {len(entries):,} posts  |  "
+        f"{len({e['username'] for e in entries if e['username']})}"
+        f" unique authors"
+    )
     return entries
+
 
 # ---------------------------------------------------------------------------
 # Phase 1 — Resolution
 # ---------------------------------------------------------------------------
+
 
 def load_json_file(path: Path, default):
     if path.exists():
@@ -163,41 +173,56 @@ def resolve_phase(entries: list[dict]) -> dict[str, str]:
         resolved[e["url"]] = f"{media_pk}_0"
 
     save_json_file(RESOLVED_CACHE, resolved)
-    print(f"[resolve] Done. {len(unresolved) - skipped:,} resolved, {skipped:,} skipped.")
+    print(
+        f"[resolve] Done. {len(unresolved) - skipped:,} resolved, {skipped:,} skipped."
+    )
     return resolved
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 — Unlike via wbloks
 # ---------------------------------------------------------------------------
 # Static Comet/wbloks fields (from real browser capture; refresh if requests
 # start failing with error 1357054 again by grabbing a new curl from DevTools).
-_COMET_DYN  = ("7xeUjG1mxu1syUbFp41twpUnwgU7SbzEdF8aUco2qwJxS0DU2wx609vCwjE1EE2C"
-               "w8G11wBz81s8hwGxu786a3a1YwBgao6C0Mo2swlo5qfK0EUjwGzEaE2iwNwmE7G4-"
-               "5o4q3y1Sw62wLyESE7i3vwDwHg2ZwrUdUbGwmk0zU8oC1Iwqo5p0OwUQp6x6U42Un"
-               "AwCAxW1oxe6U5q0EoKmUhw5nyEcE4y16wAwj8")
-_COMET_CSR  = ("gLMrMH92YiMx6sQDlvr9_BiNB9EXhBnSnLCXoGhfpEgBJ1ncAmdGiDWybxaV8lh8"
-               "KFUx4Qbih8Ne5UK6VoGKqr8K4Q9yQEgK4pXKm4QaqGimAmi7rxLgpxjDByt4HByoJ"
-               "7Bxmaz8GfDKQcK5p8KnHmfCjwxxC5XwkV80QO0CU21waK0kW0jDwkoC4U05oG00hI"
-               "20GV81si1u0ja1iXHEE9o0yV0cudAK04Uo0pECo1ZQ48vg2L8n8QbB82a682yUmyEv"
-               "g1V61d81SDl097Cg2Dw5DwiYg1nwtlw8WbDg9859zU5UM1QE0VmbK7oco6c8FpxE06"
-               "fO01dyw2iE0Wy")
-_COMET_HSDP = ("gP31092142ARVxApdT2iaBsAIp4Q98OluzPBIMJmwzTJDFi2b513-684kg267VoCy"
-               "0k4S29hwgwqA15gd9o5a4sxF8movzoW2y1iwaC3u0jG0mu0qq04IE0jUw8-3613wRw"
-               "6fU1so982tw13C8wgo4y0iC0xU")
-_COMET_HBLP = ("1O0MUO1px-awSyrx-0BUtwxCxG0yp9Uy3B7AwlE4a26Eap8LwAzbgSi9wEy84C2O"
-               "E7x2u2K1pwhXwmohxGdz8F0xm1Oxy0Do1kE5e0cSw5Xwfm0BE5a0ZUhw58Ewowaq3"
-               "G1kwNwYCy8lxq1TwRw2lo982twiE1p82xw8q3q0H85y2e8wNzUmwNwg8cU2ixCp0Pw"
-               "kawl8")
-_COMET_SJSP = ("gP31092142ARVxApdT2iaBsAIYDfgAz9lWczBIMJmxOZXpWkwyUy4Hxy1Kx-mc81g"
-               "jo8B60uU4p0QwtF84qewuU3xw")
-_COMET_S    = "46u7rd:g4tebr:6m9qi6"   # session-state triplet (per-tab in browser)
-_COMET_BKV  = "29d0fd2d0bf67787771d758433b17814a729d9b4a57b07a39f1cc6507b480e39"  # JS bundle hash
+_COMET_DYN = (
+    "7xeUjG1mxu1syUbFp41twpUnwgU7SbzEdF8aUco2qwJxS0DU2wx609vCwjE1EE2C"
+    "w8G11wBz81s8hwGxu786a3a1YwBgao6C0Mo2swlo5qfK0EUjwGzEaE2iwNwmE7G4-"
+    "5o4q3y1Sw62wLyESE7i3vwDwHg2ZwrUdUbGwmk0zU8oC1Iwqo5p0OwUQp6x6U42Un"
+    "AwCAxW1oxe6U5q0EoKmUhw5nyEcE4y16wAwj8"
+)
+_COMET_CSR = (
+    "gLMrMH92YiMx6sQDlvr9_BiNB9EXhBnSnLCXoGhfpEgBJ1ncAmdGiDWybxaV8lh8"
+    "KFUx4Qbih8Ne5UK6VoGKqr8K4Q9yQEgK4pXKm4QaqGimAmi7rxLgpxjDByt4HByoJ"
+    "7Bxmaz8GfDKQcK5p8KnHmfCjwxxC5XwkV80QO0CU21waK0kW0jDwkoC4U05oG00hI"
+    "20GV81si1u0ja1iXHEE9o0yV0cudAK04Uo0pECo1ZQ48vg2L8n8QbB82a682yUmyEv"
+    "g1V61d81SDl097Cg2Dw5DwiYg1nwtlw8WbDg9859zU5UM1QE0VmbK7oco6c8FpxE06"
+    "fO01dyw2iE0Wy"
+)
+_COMET_HSDP = (
+    "gP31092142ARVxApdT2iaBsAIp4Q98OluzPBIMJmwzTJDFi2b513-684kg267VoCy"
+    "0k4S29hwgwqA15gd9o5a4sxF8movzoW2y1iwaC3u0jG0mu0qq04IE0jUw8-3613wRw"
+    "6fU1so982tw13C8wgo4y0iC0xU"
+)
+_COMET_HBLP = (
+    "1O0MUO1px-awSyrx-0BUtwxCxG0yp9Uy3B7AwlE4a26Eap8LwAzbgSi9wEy84C2O"
+    "E7x2u2K1pwhXwmohxGdz8F0xm1Oxy0Do1kE5e0cSw5Xwfm0BE5a0ZUhw58Ewowaq3"
+    "G1kwNwYCy8lxq1TwRw2lo982twiE1p82xw8q3q0H85y2e8wNzUmwNwg8cU2ixCp0Pw"
+    "kawl8"
+)
+_COMET_SJSP = (
+    "gP31092142ARVxApdT2iaBsAIYDfgAz9lWczBIMJmxOZXpWkwyUy4Hxy1Kx-mc81g"
+    "jo8B60uU4p0QwtF84qewuU3xw"
+)
+_COMET_S = "46u7rd:g4tebr:6m9qi6"  # session-state triplet (per-tab in browser)
+_COMET_BKV = (
+    "29d0fd2d0bf67787771d758433b17814a729d9b4a57b07a39f1cc6507b480e39"  # JS bundle hash
+)
 
 # Relay container IDs emitted by the wbloks layout.  The server validates that
 # they are plausible integers; the exact values don't matter.
 _CONTAINER_ID = 1038143070
-_ELEMENT_ID   = 1038143071
-_SPINNER_ID   = 1038143072
+_ELEMENT_ID = 1038143071
+_SPINNER_ID = 1038143072
 
 BROWSER_UA_EDGE = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -213,16 +238,19 @@ def _make_session(session_id: str) -> requests.Session:
     fb_dtsg token.  Using a header string avoids that encoding.
     """
     s = requests.Session()
-    s.headers.update({
-        "User-Agent": BROWSER_UA_EDGE,
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cookie": f"sessionid={session_id}",
-    })
+    s.headers.update(
+        {
+            "User-Agent": BROWSER_UA_EDGE,
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": f"sessionid={session_id}",
+        }
+    )
     return s
 
 
 def _scrape_tokens(html: str, s: requests.Session) -> dict:
     """Extract session-specific Comet tokens from the likes page HTML."""
+
     def find(patterns, default=""):
         for pat in patterns:
             m = re.search(pat, html)
@@ -230,23 +258,33 @@ def _scrape_tokens(html: str, s: requests.Session) -> dict:
                 return m.group(1)
         return default
 
-    fb_dtsg = find([
-        r'"fb_dtsg"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"',
-        r'"token"\s*:\s*"(NAfs[^"]+)"',
-    ])
+    fb_dtsg = find(
+        [
+            r'"fb_dtsg"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"',
+            r'"token"\s*:\s*"(NAfs[^"]+)"',
+        ]
+    )
     if not fb_dtsg:
         sys.exit("[ERROR] Could not extract fb_dtsg — is your sessionid valid?")
 
-    lsd = find([
-        r'"LSD"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"',
-        r'name="lsd"\s+value="([^"]+)"',
-        r'"lsd"\s*:\s*"([^"]+)"',
-    ])
-    rev  = find([r'"client_revision"\s*:\s*(\d+)', r'"__rev"\s*:\s*(\d+)',
-                 r'"server_revision"\s*:\s*(\d+)'], default="0")
-    hsi  = find([r'"hsi"\s*:\s*"(\d+)"', r'"__hsi"\s*:\s*"(\d+)"'])
-    hs   = find([r'"__hs"\s*:\s*"([^"]+)"', r'"haste_session"\s*:\s*"([^"]+)"'])
-    bkv  = find([r'"__bkv"\s*:\s*"([a-f0-9]+)"', r'__bkv=([a-f0-9]+)'])
+    lsd = find(
+        [
+            r'"LSD"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"',
+            r'name="lsd"\s+value="([^"]+)"',
+            r'"lsd"\s*:\s*"([^"]+)"',
+        ]
+    )
+    rev = find(
+        [
+            r'"client_revision"\s*:\s*(\d+)',
+            r'"__rev"\s*:\s*(\d+)',
+            r'"server_revision"\s*:\s*(\d+)',
+        ],
+        default="0",
+    )
+    hsi = find([r'"hsi"\s*:\s*"(\d+)"', r'"__hsi"\s*:\s*"(\d+)"'])
+    hs = find([r'"__hs"\s*:\s*"([^"]+)"', r'"haste_session"\s*:\s*"([^"]+)"'])
+    bkv = find([r'"__bkv"\s*:\s*"([a-f0-9]+)"', r"__bkv=([a-f0-9]+)"])
 
     csrftoken = s.cookies.get("csrftoken", "")
     if not csrftoken:
@@ -256,13 +294,21 @@ def _scrape_tokens(html: str, s: requests.Session) -> dict:
         if "csrftoken" not in current:
             s.headers["Cookie"] = current + f"; csrftoken={csrftoken}"
 
-    spin_t  = str(int(time.time()))
+    spin_t = str(int(time.time()))
     jazoest = "2" + str(sum(ord(c) for c in rev))
 
     return {
-        "fb_dtsg": fb_dtsg, "lsd": lsd, "csrftoken": csrftoken,
-        "__rev": rev, "__spin_r": rev, "__spin_b": "trunk", "__spin_t": spin_t,
-        "__hsi": hsi, "__hs": hs, "jazoest": jazoest, "__bkv": bkv,
+        "fb_dtsg": fb_dtsg,
+        "lsd": lsd,
+        "csrftoken": csrftoken,
+        "__rev": rev,
+        "__spin_r": rev,
+        "__spin_b": "trunk",
+        "__spin_t": spin_t,
+        "__hsi": hsi,
+        "__hs": hs,
+        "jazoest": jazoest,
+        "__bkv": bkv,
         "__crn": "comet.igweb.PolarisYourActivityInteractionsRoute",
     }
 
@@ -301,17 +347,29 @@ def _post_headers(tokens: dict) -> dict:
 
 def _build_body(tokens: dict, params_obj: dict) -> dict:
     body: dict = {
-        "__d": "www", "__user": "0", "__a": "1",
-        "__req": _next_req(), "__comet_req": "7",
-        "dpr": "1", "__ccg": "GOOD",
-        "__rev": tokens["__rev"], "__spin_r": tokens["__spin_r"],
-        "__spin_b": tokens["__spin_b"], "__spin_t": tokens["__spin_t"],
+        "__d": "www",
+        "__user": "0",
+        "__a": "1",
+        "__req": _next_req(),
+        "__comet_req": "7",
+        "dpr": "1",
+        "__ccg": "GOOD",
+        "__rev": tokens["__rev"],
+        "__spin_r": tokens["__spin_r"],
+        "__spin_b": tokens["__spin_b"],
+        "__spin_t": tokens["__spin_t"],
         "__crn": tokens["__crn"],
         "__hs": tokens.get("__hs") or "20515.HYP:instagram_web_pkg.2.1...0",
         "__hsi": tokens.get("__hsi", ""),
-        "__s": _COMET_S, "__dyn": _COMET_DYN, "__csr": _COMET_CSR,
-        "__hsdp": _COMET_HSDP, "__hblp": _COMET_HBLP, "__sjsp": _COMET_SJSP,
-        "fb_dtsg": tokens["fb_dtsg"], "jazoest": tokens["jazoest"], "lsd": tokens["lsd"],
+        "__s": _COMET_S,
+        "__dyn": _COMET_DYN,
+        "__csr": _COMET_CSR,
+        "__hsdp": _COMET_HSDP,
+        "__hblp": _COMET_HBLP,
+        "__sjsp": _COMET_SJSP,
+        "fb_dtsg": tokens["fb_dtsg"],
+        "jazoest": tokens["jazoest"],
+        "lsd": tokens["lsd"],
         "params": json.dumps(params_obj, separators=(",", ":")),
     }
     return body
@@ -323,23 +381,33 @@ def fetch_tokens(session_id: str) -> tuple:
     """
     session_id = unquote(session_id)  # handle %3A-encoded values from .env
     print("[tokens] Loading instagram.com/your_activity/interactions/likes/ …")
-    s    = _make_session(session_id)
-    resp = s.get("https://www.instagram.com/your_activity/interactions/likes/", timeout=20)
+    s = _make_session(session_id)
+    resp = s.get(
+        "https://www.instagram.com/your_activity/interactions/likes/", timeout=20
+    )
     resp.raise_for_status()
     if "accounts/login" in resp.url or "login" in resp.url:
-        sys.exit("[ERROR] Instagram redirected to login — your sessionid has expired. "
-                 "Get a fresh one from browser DevTools (Application → Cookies → sessionid).")
+        sys.exit(
+            "[ERROR] Instagram redirected to login — your sessionid has expired. "
+            "Get a fresh one from browser DevTools (Application → Cookies → sessionid)."
+        )
     tokens = _scrape_tokens(resp.text, s)
     c = tokens.get("csrftoken", "")
     print(f"  csrftoken={c[:10]}…" if c else "  [warn] csrftoken not found")
-    print(f"[tokens] fb_dtsg={tokens['fb_dtsg'][:14]}…  lsd={tokens['lsd']}  "
-          f"__rev={tokens['__rev']}  __bkv={tokens['__bkv'] or '(none)'}  "
-          f"__hs={tokens['__hs'][:20]}…")
+    print(
+        f"[tokens] fb_dtsg={tokens['fb_dtsg'][:14]}…  lsd={tokens['lsd']}  "
+        f"__rev={tokens['__rev']}  __bkv={tokens['__bkv'] or '(none)'}  "
+        f"__hs={tokens['__hs'][:20]}…"
+    )
     return tokens, s
 
 
-def post_batch(session_id: str, tokens: dict, item_keys: list,
-               ig_session: requests.Session | None = None) -> bool | None:
+def post_batch(
+    session_id: str,
+    tokens: dict,
+    item_keys: list,
+    ig_session: requests.Session | None = None,
+) -> bool | None:
     """POST a single batch to the wbloks unlike endpoint.
 
     Returns:
@@ -349,11 +417,12 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
     """
     params_obj = {
         "content_container_id": _CONTAINER_ID,
-        "content_element_id":   _ELEMENT_ID,
-        "content_spinner_id":   _SPINNER_ID,
+        "content_element_id": _ELEMENT_ID,
+        "content_spinner_id": _SPINNER_ID,
         "main_order_state_value": True,
         "main_attribute_order_state_value": "newest_to_oldest",
-        "main_date_start_state_value": -1, "main_date_end_state_value": -1,
+        "main_date_start_state_value": -1,
+        "main_date_end_state_value": -1,
         "main_authors_state_value": "",
         "main_filter_to_visible_on_facebook_value": False,
         "main_includes_location_value": False,
@@ -361,21 +430,24 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
         "main_content_type_value": 0,
         "main_content_types_value": "Posts, Reels",
         "main_account_history_events_state_value": "",
-        "entrypoint": "", "shared_user_id": "",
+        "entrypoint": "",
+        "shared_user_id": "",
         "main_filter_to_visible_from_facebook_value": False,
         "items_for_action": ",".join(item_keys),
         "number_of_items": len(item_keys),
     }
     body = _build_body(tokens, params_obj)
-    bkv  = tokens.get("__bkv") or _COMET_BKV
-    url  = WBLOKS_BASE_URL + f"&__bkv={bkv}"
+    bkv = tokens.get("__bkv") or _COMET_BKV
+    url = WBLOKS_BASE_URL + f"&__bkv={bkv}"
 
     sess = ig_session
     if sess is None:
         sess = _make_session(session_id)
         c = tokens.get("csrftoken", "")
         if c:
-            sess.headers["Cookie"] = str(sess.headers.get("Cookie", "")) + f"; csrftoken={c}"
+            sess.headers["Cookie"] = (
+                str(sess.headers.get("Cookie", "")) + f"; csrftoken={c}"
+            )
 
     for _attempt in range(3):
         try:
@@ -383,10 +455,14 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
             break
         except requests.exceptions.Timeout:
             if _attempt == 2:
-                print("  [warn] Timed out 3 times — action uncertain, will retry next run")
+                print(
+                    "  [warn] Timed out 3 times — action uncertain, will retry next run"
+                )
                 return None  # uncertain: do NOT save to progress
             _wait = 15 * (_attempt + 1)
-            print(f"  [warn] Timeout on attempt {_attempt + 1}/3, retrying in {_wait}s …")
+            print(
+                f"  [warn] Timeout on attempt {_attempt + 1}/3, retrying in {_wait}s …"
+            )
             time.sleep(_wait)
     else:
         return None  # all retries exhausted, uncertain
@@ -399,7 +475,7 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
         # Instagram's backend sometimes 500s after processing the action.
         # Extract page title + first meaningful body text from the HTML.
         title_m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.I)
-        body_m  = re.search(r"<body[^>]*>(.*?)</body>", text, re.I | re.S)
+        body_m = re.search(r"<body[^>]*>(.*?)</body>", text, re.I | re.S)
         body_text = ""
         if body_m:
             body_text = re.sub(r"<[^>]+>", " ", body_m.group(1))
@@ -419,7 +495,9 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
         return False
 
     if "error" in data:
-        print(f"  HTTP {resp.status_code} | [error] code={data['error']} — {data.get('errorSummary', '')}")
+        print(
+            f"  HTTP {resp.status_code} | [error] code={data['error']} — {data.get('errorSummary', '')}"
+        )
         return False
 
     if resp.status_code == 200:
@@ -433,8 +511,9 @@ def post_batch(session_id: str, tokens: dict, item_keys: list,
 
         # 2. Any visible human-readable text fields in the response
         all_text = re.findall(r'"text"\s*:\s*"([^"]{5,})"', raw)
-        meaningful = [t for t in all_text
-                      if not t.startswith("dtl:") and "\\" not in t][:3]
+        meaningful = [
+            t for t in all_text if not t.startswith("dtl:") and "\\" not in t
+        ][:3]
         if meaningful:
             print(f"  HTTP 200 | bloks messages: {' | '.join(meaningful)}")
         else:
@@ -462,8 +541,10 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
             pending.append(key)
 
     total = len(pending)
-    print(f"\n[unlike] {total:,} items pending  |  batch size: {BATCH_SIZE}  |  "
-          f"~{total // BATCH_SIZE + 1} batches  |  workers: {BATCH_WORKERS}")
+    print(
+        f"\n[unlike] {total:,} items pending  |  batch size: {BATCH_SIZE}  |  "
+        f"~{total // BATCH_SIZE + 1} batches  |  workers: {BATCH_WORKERS}"
+    )
 
     if not pending:
         print("[unlike] Nothing to do — all posts already unliked.")
@@ -472,15 +553,19 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
     tokens, ig_session = fetch_tokens(session_id)
     done_lock = threading.Lock()
     unliked = 0
-    batches = [pending[i:i + BATCH_SIZE] for i in range(0, len(pending), BATCH_SIZE)]
+    batches = [pending[i : i + BATCH_SIZE] for i in range(0, len(pending), BATCH_SIZE)]
     total_batches = len(batches)
 
     def _dispatch(batch: list[str], bnum: int) -> bool | None:
         ok = post_batch(session_id, tokens, batch, ig_session=ig_session)
         if ok is True:
-            print(f"  [batch {bnum}/{total_batches}] ✓ {len(batch)} unliked in background")
+            print(
+                f"  [batch {bnum}/{total_batches}] ✓ {len(batch)} unliked in background"
+            )
         elif ok is None:
-            print(f"  [batch {bnum}/{total_batches}] ? timed out — will retry next run (not saved to progress)")
+            print(
+                f"  [batch {bnum}/{total_batches}] ? timed out — will retry next run (not saved to progress)"
+            )
         else:
             print(f"  [batch {bnum}/{total_batches}] ✗ failed (logged, continuing)")
         return ok
@@ -503,8 +588,10 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
                                 done.add(k)
                             unliked += len(keys)
                         save_json_file(PROGRESS_FILE, sorted(done))
-                        print(f"  [progress] total unliked this run: {unliked:,}  |  "
-                              f"remaining: {total - unliked:,}")
+                        print(
+                            f"  [progress] total unliked this run: {unliked:,}  |  "
+                            f"remaining: {total - unliked:,}"
+                        )
                 else:
                     still_pending.append((bnum, keys, fut))
             pending_futures = still_pending
@@ -521,14 +608,18 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
                                     done.add(k)
                                 unliked += len(keys)
                             save_json_file(PROGRESS_FILE, sorted(done))
-                            print(f"  [progress] total unliked this run: {unliked:,}  |  "
-                                  f"remaining: {total - unliked:,}")
+                            print(
+                                f"  [progress] total unliked this run: {unliked:,}  |  "
+                                f"remaining: {total - unliked:,}"
+                            )
                     else:
                         still_pending.append((bnum, keys, fut))
                 pending_futures = still_pending
 
-            print(f"\n[unlike] Dispatching batch {batch_num}/{total_batches} "
-                  f"— {len(batch)} items …")
+            print(
+                f"\n[unlike] Dispatching batch {batch_num}/{total_batches} "
+                f"— {len(batch)} items …"
+            )
             fut = pool.submit(_dispatch, batch, batch_num)
             pending_futures.append((batch_num, batch, fut))
 
@@ -548,9 +639,11 @@ def unlike_phase(entries: list[dict], resolved: dict[str, str]) -> None:
 
     print(f"\n[done] Unliked {unliked:,} posts this run.")
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def live_unlike_loop(session_id: str) -> None:
     """Fetch liked posts one batch at a time and unlike in background threads.
@@ -583,7 +676,9 @@ def live_unlike_loop(session_id: str) -> None:
         if ok is True:
             print(f"  [round {rnum}] ✓ {len(keys)} unliked in background")
         elif ok is None:
-            print(f"  [round {rnum}] ? timed out — will retry next run (not saved to progress)")
+            print(
+                f"  [round {rnum}] ? timed out — will retry next run (not saved to progress)"
+            )
         else:
             print(f"  [round {rnum}] ✗ batch failed (logged, continuing)")
         return ok
@@ -609,7 +704,9 @@ def live_unlike_loop(session_id: str) -> None:
                             for k in keys:
                                 done.discard(k)
                         tag = "timed out" if result is None else "failed"
-                        print(f"  [round {rnum}] {tag} — keys un-marked, will retry on next fetch")
+                        print(
+                            f"  [round {rnum}] {tag} — keys un-marked, will retry on next fetch"
+                        )
                 else:
                     still_pending.append((rnum, keys, fut))
             pending_futures = still_pending
@@ -620,7 +717,9 @@ def live_unlike_loop(session_id: str) -> None:
                 continue
 
             round_num += 1
-            print(f"\n[live] Round {round_num} — fetching up to {BATCH_SIZE} liked posts …")
+            print(
+                f"\n[live] Round {round_num} — fetching up to {BATCH_SIZE} liked posts …"
+            )
             medias = cl.liked_medias(amount=BATCH_SIZE)
 
             if not medias:
@@ -637,7 +736,9 @@ def live_unlike_loop(session_id: str) -> None:
                 print("[live] All fetched posts already queued/done — stopping.")
                 break
 
-            print(f"[live] {len(medias)} fetched, dispatching {len(item_keys)} to background …")
+            print(
+                f"[live] {len(medias)} fetched, dispatching {len(item_keys)} to background …"
+            )
             fut = pool.submit(_dispatch, item_keys, round_num)
             pending_futures.append((round_num, item_keys, fut))
 
@@ -657,12 +758,19 @@ def live_unlike_loop(session_id: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--resolve-only", action="store_true",
-                        help="Only run Phase 1 (resolve URLs), skip Phase 2 (unlike).")
-    parser.add_argument("--live", action="store_true",
-                        help="Fetch current liked posts via instagrapi instead of export file.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--resolve-only",
+        action="store_true",
+        help="Only run Phase 1 (resolve URLs), skip Phase 2 (unlike).",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Fetch current liked posts via instagrapi instead of export file.",
+    )
     args = parser.parse_args()
 
     if args.live:
